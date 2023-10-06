@@ -1,7 +1,9 @@
+import base64
 import functools
 import json
 import logging
 from datetime import datetime
+import os
 from pathlib import Path
 from socket import gethostname
 from typing import (
@@ -18,13 +20,43 @@ from aw_core.log import get_log_file_path
 from aw_core.models import Event
 from aw_query import query2
 from aw_transform import heartbeat_merge
+import keyring
 
 from .__about__ import __version__
 from .exceptions import NotFound
+import uuid
+from cryptography.fernet import Fernet
+
 
 logger = logging.getLogger(__name__)
 
+def generate_key():
+    key = Fernet.generate_key()
+    key_string = base64.urlsafe_b64encode(key).decode('utf-8')
+    keyring.set_password("aw_key", "aw_key", key_string)
+    os.environ['SECRET_KEY'] = key_string
 
+# Load the secret key from a file
+def load_key():
+    key_string = os.environ.get('SECRET_KEY')
+    if not key_string:
+        key_string = keyring.get_password("aw_key", "aw_key")
+    if not key_string:
+        return None
+    return base64.urlsafe_b64decode(key_string.encode('utf-8'))
+
+# Encrypt the UUID
+def encrypt_uuid(uuid_str, key):
+    fernet = Fernet(key)
+    encrypted_uuid = fernet.encrypt(str(uuid_str).encode())
+    return base64.urlsafe_b64encode(encrypted_uuid).decode('utf-8')
+
+# Decrypt the UUID
+def decrypt_uuid(encrypted_uuid, key):
+    fernet = Fernet(key)
+    encrypted_uuid_byte = base64.urlsafe_b64decode(encrypted_uuid.encode('utf-8'))
+    decrypted_uuid = fernet.decrypt(encrypted_uuid_byte)
+    return decrypted_uuid.decode()
 def get_device_id() -> str:
     path = Path(get_data_dir("aw-server")) / "device_id"
     if path.exists():
@@ -52,6 +84,20 @@ class ServerAPI:
         self.db = db
         self.testing = testing
         self.last_event = {}  # type: dict
+
+    def init_db(self) -> bool:
+        generate_key()
+        key = load_key()
+        user_key = encrypt_uuid(uuid.uuid4(), key)
+        db_key = encrypt_uuid(uuid.uuid4(), key)
+        watcher_key = encrypt_uuid(uuid.uuid4(), key)
+        print(f"user_key: {decrypt_uuid(user_key, key)}")
+        print(f"db_key: {decrypt_uuid(db_key, key)}")
+        print(f"watcher_key: {decrypt_uuid(watcher_key, key)}")
+        keyring.set_password("aw_user", "aw_user", user_key)
+        keyring.set_password("aw_db", "db_key", db_key)
+        keyring.set_password("aw_watcher", "watcher_key", watcher_key)
+        return self.db.init_db()
 
     def get_info(self) -> Dict[str, Any]:
         """Get server info"""

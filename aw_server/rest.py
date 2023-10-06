@@ -1,4 +1,6 @@
+import base64
 import json
+import os
 import traceback
 from functools import wraps
 from threading import Lock
@@ -16,12 +18,28 @@ from flask import (
     request,
 )
 from flask_restx import Api, Resource, fields
+import jwt
+import keyring
 
 from . import logger
 from .api import ServerAPI
 from .exceptions import BadRequest, Unauthorized
+from cryptography.fernet import Fernet
 
+def load_key():
+    key_string = os.environ.get('SECRET_KEY')
+    if not key_string:
+        key_string = keyring.get_password("aw_key", "aw_key")
+    if not key_string:
+        return None
+    return base64.urlsafe_b64decode(key_string.encode('utf-8'))
 
+# Decrypt the UUID
+def decrypt_uuid(encrypted_uuid, key):
+    fernet = Fernet(key)
+    encrypted_uuid_byte = base64.urlsafe_b64decode(encrypted_uuid.encode('utf-8'))
+    decrypted_uuid = fernet.decrypt(encrypted_uuid_byte)
+    return decrypted_uuid.decode()
 def host_header_check(f):
     """
     Protects against DNS rebinding attacks (see https://github.com/ActivityWatch/activitywatch/security/advisories/GHSA-v9fg-6g9j-h4x4)
@@ -31,6 +49,11 @@ def host_header_check(f):
 
     @wraps(f)
     def decorator(*args, **kwargs):
+        # if(request.path != '/api/swagger.json' and request.path != '/api/0/login'  and request.path != '/api/0/user'):
+        #     token = request.headers.get("Authorization")
+        #     if not token:
+        #         return {"message": "Token is missing"}, 401  # Return 401 Unauthorized if token is not present
+
         server_host = current_app.config["HOST"]
         req_host = request.headers.get("host", None)
         if server_host == "0.0.0.0":
@@ -123,6 +146,39 @@ class InfoResource(Resource):
     def get(self) -> Dict[str, Dict]:
         return current_app.api.get_info()
 
+# Users
+
+
+@api.route("/0/user")
+class UserResource(Resource):
+    def post(self):
+        data = request.get_json()
+        if not data['user_name']:
+            return {"message": "User name is mandatory"}, 400
+        elif not data['password']:
+            return {"message": "Password is mandatory"}, 400
+        user = keyring.get_password("aw_user", "aw_user")
+        if not user:
+            init_db = current_app.api.init_db()
+            if init_db:
+                keyring.set_password(f"aw_user/{data['user_name']}", data['user_name'], data['password'])
+                return {"message": "Account created successfully"}, 200
+            else:
+                keyring.delete_password("aw_user", "aw_user")
+                return {"message": "Something went wrong"}, 500
+        else:
+            return {"message": "Account already exist"}, 400
+@api.route("/0/login")
+class LoginResource(Resource):
+    def post(self):
+        data = request.get_json()
+        password = keyring.get_password(f"aw_user/{data['user_name']}", data['user_name'])
+        if password and password == data['password']:
+            user_key = keyring.get_password("aw_user", "aw_user")
+            key = load_key()
+            encoded_jwt = jwt.encode({"some": "payload"}, decrypt_uuid(user_key, key) , algorithm="HS256")
+            return {"token": "Bearer "+encoded_jwt}, 200  # Return 401 Unauthorized if token is not present
+        return {"message": "Username or password is wrong"}, 200
 
 # BUCKETS
 

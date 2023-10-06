@@ -39,6 +39,7 @@ def main():
         logger.info(f"Using custom_static: {settings.custom_static}")
 
     logger.info("Starting up...")
+
     _start(
         host=settings.host,
         port=settings.port,

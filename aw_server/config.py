@@ -5,7 +5,7 @@ default_config = """
 host = "localhost"
 port = "5600"
 storage = "peewee"
-cors_origins = ""
+cors_origins = "http://localhost:27180"
 
 [server.custom_static]
 
