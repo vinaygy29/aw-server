@@ -1,10 +1,9 @@
-import base64
 import json
-import os
 import traceback
 from functools import wraps
 from threading import Lock
 from typing import Dict
+from aw_core.util import authenticate, is_internet_connected, reset_user
 
 import iso8601
 from aw_core import schema
@@ -24,22 +23,7 @@ import keyring
 from . import logger
 from .api import ServerAPI
 from .exceptions import BadRequest, Unauthorized
-from cryptography.fernet import Fernet
 
-def load_key():
-    key_string = os.environ.get('SECRET_KEY')
-    if not key_string:
-        key_string = keyring.get_password("aw_key", "aw_key")
-    if not key_string:
-        return None
-    return base64.urlsafe_b64decode(key_string.encode('utf-8'))
-
-# Decrypt the UUID
-def decrypt_uuid(encrypted_uuid, key):
-    fernet = Fernet(key)
-    encrypted_uuid_byte = base64.urlsafe_b64decode(encrypted_uuid.encode('utf-8'))
-    decrypted_uuid = fernet.decrypt(encrypted_uuid_byte)
-    return decrypted_uuid.decode()
 def host_header_check(f):
     """
     Protects against DNS rebinding attacks (see https://github.com/ActivityWatch/activitywatch/security/advisories/GHSA-v9fg-6g9j-h4x4)
@@ -152,33 +136,100 @@ class InfoResource(Resource):
 @api.route("/0/user")
 class UserResource(Resource):
     def post(self):
+        if not is_internet_connected():
+            print("Please connect to internet and try again.")
         data = request.get_json()
-        if not data['user_name']:
+        if not data['email']:
             return {"message": "User name is mandatory"}, 400
         elif not data['password']:
             return {"message": "Password is mandatory"}, 400
         user = keyring.get_password("aw_user", "aw_user")
-        if not user:
-            init_db = current_app.api.init_db()
-            if init_db:
-                keyring.set_password(f"aw_user/{data['user_name']}", data['user_name'], data['password'])
-                return {"message": "Account created successfully"}, 200
+        if True:
+            result = current_app.api.create_user(data)
+            if result.status_code == 200 and json.loads(result.text)["code"] == 'UASI0001' :
+                userPayload = {
+                    "userName" : data['email'],
+                    "password" : data['password']
+                }
+                authResult = current_app.api.authorize(userPayload)
+
+                if authResult.status_code == 200 and json.loads(authResult.text)["code"] == 'LVLI0000' :
+                    token = json.loads(authResult.text)["data"]["access_token"]
+                    id = json.loads(authResult.text)["data"]["id"]
+                    companyPayload = {
+                        "name" : data['company'],
+                        "code" : data['company'],
+                        "status" : "ACTIVE"
+                    }
+
+                    companyResult = current_app.api.create_company(companyPayload,'Bearer '+token)
+
+                    if companyResult.status_code == 200 and json.loads(companyResult.text)["code"] == 'UASI0006' :
+                        current_app.api.get_user_credentials(id,'Bearer '+token)
+                        init_db = current_app.api.init_db()
+                        if init_db:
+                            return {"message": "Account created successfully"}, 200
+                        else:
+                            reset_user()
+                            return {"message": "Something went wrong"}, 500
+                    else:
+                        return json.loads(companyResult.text), 200
+                else:
+                    return json.loads(authResult.text), 200
             else:
-                keyring.delete_password("aw_user", "aw_user")
-                return {"message": "Something went wrong"}, 500
-        else:
-            return {"message": "Account already exist"}, 400
+                return json.loads(result.text), 200
+
+#Login by system credentials
 @api.route("/0/login")
 class LoginResource(Resource):
     def post(self):
         data = request.get_json()
-        password = keyring.get_password(f"aw_user/{data['user_name']}", data['user_name'])
-        if password and password == data['password']:
+        user_key = keyring.get_password("aw_user", "aw_user")
+        if user_key:
+            if authenticate(data['user_name'], data['password']):
+                encoded_jwt = jwt.encode({"user": data['user_name']}, user_key , algorithm="HS256")
+                return {"token": "Bearer "+encoded_jwt}, 200
+            else:
+                return {"message": "Username or password is wrong"}, 200
+        else:
+            return {"message": "User does not exist"}, 200
+
+    def get(self):
+        user_key = keyring.get_password("aw_user", "aw_user")
+        if user_key:
+            return {"message": "User exist"}, 200
+        else:
+            return {"message": "User does not exist"}, 401
+
+#Login by ralvie cloud
+@api.route("/0/ralvie/login")
+class RalvieLoginResource(Resource):
+    def post(self):
+        if not is_internet_connected():
+            return {"message": "Please connect to internet and try again."}, 200
+        data = request.get_json()
+        if not data['userName']:
+            return {"message": "User name is mandatory"}, 400
+        elif not data['password']:
+            return {"message": "Password is mandatory"}, 400
+        authResult = current_app.api.authorize(data)
+        if authResult.status_code == 200 and json.loads(authResult.text)["code"] == 'UASI0011' :
             user_key = keyring.get_password("aw_user", "aw_user")
-            key = load_key()
-            encoded_jwt = jwt.encode({"some": "payload"}, decrypt_uuid(user_key, key) , algorithm="HS256")
-            return {"token": "Bearer "+encoded_jwt}, 200  # Return 401 Unauthorized if token is not present
-        return {"message": "Username or password is wrong"}, 200
+            if not user_key:
+                token = json.loads(authResult.text)["data"]["access_token"]
+                id = json.loads(authResult.text)["data"]["id"]
+                current_app.api.get_user_credentials(id,'Bearer '+token)
+                init_db = current_app.api.init_db()
+                if not init_db:
+                    reset_user()
+                    return {"message": "Something went wrong"}, 500
+            user_key = keyring.get_password("aw_user", "aw_user")
+            encoded_jwt = jwt.encode({"user": data['userName']}, user_key , algorithm="HS256")
+            return {"token": "Bearer "+encoded_jwt}, 200
+        else:
+            return {"message": json.loads(authResult.text)["message"]}, 200
+
+
 
 # BUCKETS
 
