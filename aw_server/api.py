@@ -78,7 +78,7 @@ class ServerAPI:
         self.testing = testing
         self.last_event = {}  # type: dict
         self.server_address = "{protocol}://{host}:{port}".format(
-            protocol='http', host='localhost', port='9010'
+            protocol='http', host='10.10.10.142', port='9010'
         )
 
     def _url(self, endpoint: str):
@@ -132,7 +132,7 @@ class ServerAPI:
     def get_user_credentials(self, userId, token):
         endpoint = f"/web/user/{userId}/credentials"
         user_credentials = self._get(endpoint, {"Authorization" : token})
-        if user_credentials.status_code == 200 and json.loads(user_credentials.text)["code"] == 'LVLI0000' :
+        if user_credentials.status_code == 200 and json.loads(user_credentials.text)["code"] == 'RCI0000' :
 
             db_key = json.loads(user_credentials.text)["data"]["dbKey"]
             data_encryption_key = json.loads(user_credentials.text)["data"]["dataEncryptionKey"]

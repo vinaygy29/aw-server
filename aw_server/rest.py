@@ -153,7 +153,10 @@ class UserResource(Resource):
                 }
                 authResult = current_app.api.authorize(userPayload)
 
-                if authResult.status_code == 200 and json.loads(authResult.text)["code"] == 'LVLI0000' :
+                if 'company' not in data:
+                    return json.loads(authResult.text), 200
+
+                if authResult.status_code == 200 and json.loads(authResult.text)["code"] == 'RCI0000' :
                     token = json.loads(authResult.text)["data"]["access_token"]
                     id = json.loads(authResult.text)["data"]["id"]
                     companyPayload = {
@@ -178,6 +181,30 @@ class UserResource(Resource):
                     return json.loads(authResult.text), 200
             else:
                 return json.loads(result.text), 200
+        else:
+            return {"message": "User already exist"}, 200
+
+@api.route("/0/company")
+class CompanyResource(Resource):
+    def post(self):
+        data = request.get_json()
+        token = request.headers.get("Authorization")
+        if not token:
+            return {"message": "Token is required"}, 401
+        if not data['name']:
+            return {"message": "Company name is mandatory"}, 400
+        companyPayload = {
+            "name" : data['name'],
+            "code" : data['code'],
+            "status" : "ACTIVE"
+        }
+
+        companyResult = current_app.api.create_company(companyPayload,token)
+
+        if companyResult.status_code == 200 and json.loads(companyResult.text)["code"] == 'UASI0006' :
+            return json.loads(companyResult.text), 200
+        else:
+            return json.loads(companyResult.text), companyResult.status_code
 
 #Login by system credentials
 @api.route("/0/login")
@@ -186,11 +213,11 @@ class LoginResource(Resource):
         data = request.get_json()
         user_key = keyring.get_password("aw_user", "aw_user")
         if user_key:
-            if authenticate(data['user_name'], data['password']):
-                encoded_jwt = jwt.encode({"user": data['user_name']}, user_key , algorithm="HS256")
-                return {"token": "Bearer "+encoded_jwt}, 200
+            if authenticate(data['userName'], data['password']):
+                encoded_jwt = jwt.encode({"user": data['userName']}, user_key , algorithm="HS256")
+                return {"code": "SDI0000", "message": "Success", "data" : {"token": encoded_jwt}}, 200
             else:
-                return {"message": "Username or password is wrong"}, 200
+                return {"code": "SDE0000", "message": "Username or password is wrong"}, 200
         else:
             return {"message": "User does not exist"}, 200
 
@@ -225,9 +252,9 @@ class RalvieLoginResource(Resource):
                     return {"message": "Something went wrong"}, 500
             user_key = keyring.get_password("aw_user", "aw_user")
             encoded_jwt = jwt.encode({"user": data['userName']}, user_key , algorithm="HS256")
-            return {"token": "Bearer "+encoded_jwt}, 200
+            return {"code" : "UASI0011", "message" : json.loads(authResult.text)["message"], "data" : {"token": "Bearer "+encoded_jwt}}, 200
         else:
-            return {"message": json.loads(authResult.text)["message"]}, 200
+            return json.loads(authResult.text), 200
 
 
 
